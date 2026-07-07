@@ -3,6 +3,21 @@
 Videos, audio files, or URLs in → clean Markdown transcripts out.
 faster-whisper (CUDA with automatic CPU fallback) + yt-dlp, one cross-platform CLI.
 
+## Why
+
+YouTube's auto-generated captions are a wall of unpunctuated lowercase —
+no sentences, no paragraphs, names and jargon mangled. Fine for following
+along while watching; useless for reading, searching, or feeding into notes
+and LLM workflows. And a lot of what's worth transcribing (local lectures,
+podcasts, recordings) has no captions at all.
+
+This tool produces transcripts worth keeping: Whisper-accurate text with real
+punctuation, merged into readable paragraphs, with the video's metadata
+(title, channel, date, URL, language) in a YAML header — every video becomes
+a self-contained Markdown document ready for a knowledge base, Obsidian
+vault, or RAG pipeline. Everything runs locally on your machine; the only
+network traffic is fetching the video itself.
+
 ## Install
 
 Needs [uv](https://docs.astral.sh/uv/):
