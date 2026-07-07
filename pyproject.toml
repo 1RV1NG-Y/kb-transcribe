@@ -1,0 +1,23 @@
+[project]
+name = "kb-transcribe"
+version = "0.1.0"
+description = "Point it at videos, audio files, or URLs; get clean Markdown transcripts."
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper>=1.1.0",
+    "yt-dlp>=2025.6.9",
+    # CUDA runtime libs as pip wheels so no CUDA toolkit install is needed.
+    # Harmless dead weight on CPU-only machines; excluded on macOS.
+    "nvidia-cublas-cu12; sys_platform != 'darwin'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform != 'darwin'",
+]
+
+[project.scripts]
+transcribe = "kb_transcribe.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kb_transcribe"]
