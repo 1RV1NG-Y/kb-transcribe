@@ -38,6 +38,7 @@ up only new videos. Use `--force` to redo.
 | `-o DIR` | output directory (default `./transcripts`) |
 | `-m MODEL` | `large-v3-turbo` (default, fast) or `large-v3` (max accuracy) |
 | `-l LANG` | force language (`en`, `es`, ...); default auto-detects per file |
+| `--translate` | translate the speech to English instead of transcribing verbatim |
 | `--timestamps` | prefix each paragraph with `[h:mm:ss]` |
 | `--srt` / `--json` | also write subtitles / segment-level JSON |
 | `--batch-size N` | GPU batch size, default 8; try 12–16 on 16 GB VRAM |
@@ -52,3 +53,10 @@ up only new videos. Use `--force` to redo.
   CUDA toolkit install is needed. Falls back to CPU (int8) if CUDA fails.
 - Hallucination guards are on by default: VAD filtering (skips silence and
   music), no conditioning on previous text, repeated-segment collapse.
+- `--translate` outputs English regardless of the spoken language, saved as a
+  separate `... (translated).md` file so it can coexist with the verbatim
+  transcript. English is the only target Whisper supports natively; other
+  target languages would need a separate translation step. Translation uses
+  `large-v3` by default (turbo was trained transcription-only and translates
+  poorly) and runs on the sequential pipeline, so it is slower than
+  transcription — normal and expected.

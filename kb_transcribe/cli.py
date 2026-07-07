@@ -153,14 +153,14 @@ def collect_jobs(inputs: list[str]) -> list[dict]:
     return jobs
 
 
-def existing_output(outdir: Path, job: dict) -> Path | None:
+def existing_output(outdir: Path, job: dict, suffix: str = "") -> Path | None:
     if job["kind"] == "url" and job.get("id"):
-        tag = f"[{job['id']}].md"
+        tag = f"[{job['id']}]{suffix}.md"
         for name in os.listdir(outdir):
             if name.endswith(tag):
                 return outdir / name
     elif job["kind"] == "local":
-        md = outdir / (sanitize_filename(job["path"].stem) + ".md")
+        md = outdir / (sanitize_filename(job["path"].stem) + suffix + ".md")
         if md.exists():
             return md
     return None
@@ -241,14 +241,18 @@ class Transcriber:
         self.device = "cpu"
         self.batched = None
 
-    def transcribe(self, path: Path, language: str | None):
+    def transcribe(self, path: Path, language: str | None,
+                   task: str = "transcribe"):
         self.load()
         kwargs = dict(
             language=language,
+            task=task,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},
         )
-        if self.batched is not None:
+        # The batched pipeline accepts task="translate" but does not honor it
+        # (observed on faster-whisper 1.2.1), so translation goes sequential.
+        if self.batched is not None and task == "transcribe":
             try:
                 return self.batched.transcribe(
                     str(path), batch_size=self.batch_size, **kwargs)
@@ -274,9 +278,10 @@ def consume_segments(segments, total: float | None) -> list:
     return out
 
 
-def run_asr(transcriber: Transcriber, path: Path, language: str | None):
+def run_asr(transcriber: Transcriber, path: Path, language: str | None,
+            task: str = "transcribe"):
     try:
-        segments, info = transcriber.transcribe(path, language)
+        segments, info = transcriber.transcribe(path, language, task)
         return consume_segments(segments, info.duration), info
     except RuntimeError as e:
         cuda_issue = re.search(r"cudnn|cublas|cuda", str(e), re.IGNORECASE)
@@ -284,7 +289,7 @@ def run_asr(transcriber: Transcriber, path: Path, language: str | None):
                 and cuda_issue:
             log(f"  ! CUDA runtime failure ({e}); retrying on CPU")
             transcriber.force_cpu()
-            segments, info = transcriber.transcribe(path, language)
+            segments, info = transcriber.transcribe(path, language, task)
             return consume_segments(segments, info.duration), info
         raise
 
@@ -349,7 +354,8 @@ def output_stem(meta: dict) -> str:
 
 
 def write_markdown(path: Path, meta: dict, paras: list, info,
-                   model_name: str, timestamps: bool) -> None:
+                   model_name: str, timestamps: bool,
+                   translated: bool = False) -> None:
     lines = ["---", f"title: {yaml_str(meta['title'])}"]
     if meta.get("channel"):
         lines.append(f"channel: {yaml_str(meta['channel'])}")
@@ -363,6 +369,8 @@ def write_markdown(path: Path, meta: dict, paras: list, info,
     if prob:
         lang += f" ({prob:.0%})"
     lines.append(f"language: {yaml_str(lang)}")
+    if translated:
+        lines.append('translated: "to English"')
     lines.append(f"model: {yaml_str(model_name + ' (faster-whisper)')}")
     lines.append(f"transcribed: {dt.date.today().isoformat()}")
     lines.extend(["---", "", f"# {meta['title']}", ""])
@@ -407,9 +415,13 @@ def write_json(path: Path, meta: dict, segs: list, info,
 
 def process_job(job: dict, transcriber: Transcriber, args,
                 outdir: Path) -> str:
-    existing = existing_output(outdir, job)
+    suffix = " (translated)" if args.translate else ""
+    task = "translate" if args.translate else "transcribe"
+    verb = "translating" if args.translate else "transcribing"
+
+    existing = existing_output(outdir, job, suffix)
     if existing and not args.force:
-        log(f"  skipped, already transcribed: {existing.name}")
+        log(f"  skipped, already done: {existing.name}")
         return "skipped"
 
     if job["kind"] == "url":
@@ -417,25 +429,26 @@ def process_job(job: dict, transcriber: Transcriber, args,
             log("  downloading audio...")
             media_path, meta = download_audio(job["url"], td)
             transcriber.load()
-            log(f"  transcribing on {transcriber.device} ...")
+            log(f"  {verb} on {transcriber.device} ...")
             t0 = time.monotonic()
-            segs, info = run_asr(transcriber, media_path, args.language)
+            segs, info = run_asr(transcriber, media_path, args.language, task)
     else:
         media_path = job["path"]
         meta = {"title": media_path.stem, "source": str(media_path.resolve())}
         transcriber.load()
-        log(f"  transcribing on {transcriber.device} ...")
+        log(f"  {verb} on {transcriber.device} ...")
         t0 = time.monotonic()
-        segs, info = run_asr(transcriber, media_path, args.language)
+        segs, info = run_asr(transcriber, media_path, args.language, task)
 
     segs = collapse_repeats(segs)
     paras = build_paragraphs(segs)
     if not paras:
         raise RuntimeError("no speech detected")
 
-    stem = output_stem(meta)
+    stem = output_stem(meta) + suffix
     md_path = outdir / f"{stem}.md"
-    write_markdown(md_path, meta, paras, info, args.model, args.timestamps)
+    write_markdown(md_path, meta, paras, info, args.model, args.timestamps,
+                   translated=args.translate)
     if args.srt:
         write_srt(outdir / f"{stem}.srt", segs)
     if args.json_out:
@@ -460,9 +473,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="media files, directories, or video/playlist URLs")
     parser.add_argument("-o", "--output-dir", default="transcripts",
                         help="where transcripts go (default: ./transcripts)")
-    parser.add_argument("-m", "--model", default="large-v3-turbo",
-                        help="whisper model (default: large-v3-turbo; "
-                             "use large-v3 for max accuracy)")
+    parser.add_argument("-m", "--model", default=None,
+                        help="whisper model (default: large-v3-turbo, or "
+                             "large-v3 with --translate; use large-v3 for "
+                             "max accuracy)")
     parser.add_argument("-l", "--language", default=None,
                         help="force language code, e.g. en, es "
                              "(default: auto-detect per file)")
@@ -470,6 +484,10 @@ def main(argv: list[str] | None = None) -> int:
                         default="auto")
     parser.add_argument("--batch-size", type=int, default=8,
                         help="GPU batch size (default: 8; try 12-16 on 16 GB)")
+    parser.add_argument("--translate", action="store_true",
+                        help="translate the speech to English instead of "
+                             "transcribing it verbatim (English is the only "
+                             "target Whisper supports)")
     parser.add_argument("--timestamps", action="store_true",
                         help="prefix each paragraph with [h:mm:ss]")
     parser.add_argument("--srt", action="store_true",
@@ -479,6 +497,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-f", "--force", action="store_true",
                         help="re-transcribe even if output already exists")
     args = parser.parse_args(argv)
+
+    if args.model is None:
+        # turbo was distilled on transcription-only data and translates
+        # poorly, so translation defaults to the full model
+        args.model = "large-v3" if args.translate else "large-v3-turbo"
 
     for stream in (sys.stdout, sys.stderr):
         try:
